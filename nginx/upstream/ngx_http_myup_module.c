@@ -6,7 +6,9 @@
 static char* ngx_http_myup_myup_init(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 static ngx_int_t ngx_http_myup_handler(ngx_http_request_t *r);
 static void* ngx_http_myup_create_loc_conf(ngx_conf_t *cf);
-
+static char* ngx_http_myup_merge_loc_conf(ngx_conf_t *cf, void *prev, void *conf);
+static ngx_int_t myup_process_status_line(ngx_http_request_t *r);
+static ngx_int_t myup_process_header(ngx_http_request_t *r);
 
 typedef struct {
     ngx_http_upstream_conf_t upstream_conf;
@@ -37,7 +39,7 @@ static ngx_http_module_t ngx_http_myup_ctx = {
     NULL,
     NULL,
     ngx_http_myup_create_loc_conf,
-    NULL
+    ngx_http_myup_merge_loc_conf
 };
 
 ngx_module_t ngx_http_myup_module = {
@@ -85,10 +87,59 @@ myup_upstream_create_request(ngx_http_requeset_t *r) {
     b->last = b->pos + query_line_len;
 
     ngx_snprintf(b->pos, query_line_len, (char*)query_line.data, &r->args);
-
-
 }
 
+static char* ngx_http_myup_merge_loc_conf(ngx_conf_t *cf, void *prev, void *conf) {
+	ngx_http_myup_conf_t *parent = (ngx_http_mytest_conf_t *)prev;
+	ngx_http_myup_conf_t *child = (ngx_http_mytest_conf_t *)conf;
+	
+	ngx_hash_init_t hash;
+	hash.max_size = 100;
+	hash.bucket_size = 1024;
+	hash.name = "proxy_header_hash";
+	if (ngx_http_upstream_hide_headers_hash(cf, &child->upstream, &parent->upstream,
+							ngx_http_proxy_hide_headers, &hash) != NGX_OK){
+		return NGX_CONF_ERROR;
+	}
+	return NGX_CONF_OK;
+}
+
+static ngx_int_t myup_process_status_line(ngx_http_request_t *r) {
+		size_t len;
+		ngx_int_t rc;
+		ngx_http_upstream_t *u;
+		
+		ngx_http_myup_ctx_t *ctx = ngx_http_get_module_ctx(r, ngx_http_mytest_module);
+		if(ctx == NULL) {
+			return NGX_ERROR;		
+		}
+		u = r->upstream;
+		rc = ngx_http_parse_status_line(r, &u->buffer, &ctx->status);
+		if (rc == NGX_AGAIN) {
+			return rc;
+		}
+		if (rc == NGX_ERROR) {
+			ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "rc == NGX_ERROR");
+			r->http_version= NGX_HTTP_VERSION_9;
+			u->state->status=NGX_HTTP_OK;
+			return NGX_OK;
+		}
+		if (u->state) {
+			u->state->status = ctx->status.code;
+		}
+		u->headers_in.status_n = ctx->status.start;
+		len = ctx->status.end - ctx->status.start;
+		u->header_in.status_line.len = len;
+
+		u->headers_in.status_line.data = ngx_pnalloc(r->poll,len);
+		if (u->headers_in.status_line.data == NULL) {
+			return NGX_ERROR;
+		}
+
+		ngx_memcpy(u->headers_in.status_line.data, ctx->status.start, len);
+		u->process_header = myup_upstream_process_header;
+		return myup_upstream_process_header(r);
+}
 
 static ngx_int_t ngx_http_myup_handler(ngx_http_request_t *r) {
     ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "myup handler has been called!");
@@ -115,7 +166,7 @@ static ngx_int_t ngx_http_myup_handler(ngx_http_request_t *r) {
 
     // let's make a simple upstream conf
     //
-    return NGX_;
+    return NGX_ERROR;
 }
 
 static char* ngx_http_myup_myup_init(ngx_conf_t *cf, ngx_command_t *cmd, void *conf) {
