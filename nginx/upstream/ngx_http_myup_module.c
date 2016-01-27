@@ -297,6 +297,8 @@ static ngx_int_t ngx_http_myup_handler(ngx_http_request_t *r) {
     u->resolved->sockaddr = (struct sockaddr*)&backendSockAddr;
     u->resolved->socklen=sizeof(struct sockaddr_in);
     u->resolved->naddrs=1;
+    // some bug in nginx 1.99? we must set the port....funny...
+    u->resolved->port = (in_port_t)80;
 
     u->create_request = myup_create_request;
     u->process_header = myup_process_status_line;
