@@ -15,6 +15,7 @@ static void myup_finalize_requset(ngx_http_request_t *r, ngx_int_t rc);
 
 typedef struct {
     ngx_http_upstream_conf_t upstream_conf;
+    ngx_str_t url;
 } ngx_http_myup_conf_t;
 
 typedef struct {
@@ -40,10 +41,10 @@ static ngx_str_t  ngx_http_proxy_hide_headers[] = {
 static ngx_command_t ngx_http_myup_commands[] = {
     {
         ngx_string("myup"),
-        NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_NOARGS,
+        NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
         ngx_http_myup_myup_init,
         NGX_HTTP_LOC_CONF_OFFSET,
-        0,
+        offsetof(ngx_http_myup_conf_t, url),
         NULL
     },
     ngx_null_command
@@ -94,17 +95,19 @@ static void* ngx_http_myup_create_loc_conf(ngx_conf_t *cf) {
     conf->upstream_conf.max_temp_file_size = 1024 * 1024 * 1024;
     conf->upstream_conf.hide_headers = NGX_CONF_UNSET_PTR;
     conf->upstream_conf.pass_headers = NGX_CONF_UNSET_PTR;
+    ngx_str_null(&conf->url);
     return conf;
 }
 
 static ngx_int_t
 myup_create_request(ngx_http_request_t *r) {
-    static ngx_str_t query_line = ngx_string("GET /s?wd=%V HTTP/1.1 \r\nHost: www.baidu.com\r\nConnection: close\r\n\r\n");
+    static ngx_str_t query_line = ngx_string("GET %V HTTP/1.1 \r\nConnection: close\r\n\r\n");
     ngx_int_t query_line_len = query_line.len + r->args.len -2 ;
     ngx_buf_t *b = ngx_create_temp_buf(r->pool, query_line_len);
     b->last = b->pos + query_line_len;
 
     ngx_snprintf(b->pos, query_line_len, (char*)query_line.data, &r->args);
+    ngx_log_error(NGX_LOG_INFO, r->connection->log, 0, "the final query_line is %V", query_line);
     r->upstream->request_bufs = ngx_alloc_chain_link(r->pool);
 
     r->upstream->request_bufs->buf=b;
@@ -128,6 +131,7 @@ static char* ngx_http_myup_merge_loc_conf(ngx_conf_t *cf, void *prev, void *conf
 							ngx_http_proxy_hide_headers, &hash) != NGX_OK){
 		return NGX_CONF_ERROR;
 	}
+    ngx_conf_merge_str_value(child->url, parent->url, "www.baidu.com");
 	return NGX_CONF_OK;
 }
 
@@ -282,7 +286,9 @@ static ngx_int_t ngx_http_myup_handler(ngx_http_request_t *r) {
     }
 
     static struct sockaddr_in backendSockAddr;
-    struct hostent *pHost = gethostbyname((char*)"www.baidu.com");
+    u_char host_buf[1024];
+    ngx_sprintf(host_buf, "%V", mycf->url);
+    struct hostent *pHost = gethostbyname((char*)host_buf);
     if(pHost == NULL) {
         return NGX_ERROR;
     }
@@ -315,7 +321,17 @@ static char* ngx_http_myup_myup_init(ngx_conf_t *cf, ngx_command_t *cmd, void *c
     clcf = ngx_http_conf_get_module_loc_conf(cf, ngx_http_core_module);
     if (NULL == clcf) {
         return NGX_CONF_ERROR;
-    }	
+    }
+    // set my conf
+    ngx_http_myup_conf_t *mycf = conf;
+    ngx_array_t *args = cf->args;
+    if (args->nelts > 1){
+        mycf->url = ((ngx_str_t *)args->elts)[1];
+    } else {
+        ngx_log_error(NGX_LOG_ERR, cf->log, 0, "some eror happened, because the args number smaller than %d", 2);
+        return NGX_CONF_ERROR;
+    }
+
     clcf->handler = ngx_http_myup_handler;
     return NGX_CONF_OK;
 }
